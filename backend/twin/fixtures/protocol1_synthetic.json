@@ -1,0 +1,21 @@
+{
+  "fixture_id": "protocol1-existing-test-examples-v1",
+  "synthetic": true,
+  "provenance": "Synthetic examples extracted from frontend/tests/browser/mission-control.spec.js and tests/test_laptop1_telemetry.py; not recorded aircraft or Laptop 1 data.",
+  "verified_live_fault_codes": [],
+  "frame": {
+    "protocol": 1,
+    "seq": 7,
+    "aircraft_id": "EAGLE_EYE_MINI",
+    "mission_id": "MISSION-DEMO",
+    "scenario": "coastal",
+    "phase": "cruise",
+    "timestamp": "2026-11-04T10:40:00Z",
+    "flight": {"altitude_m": 1200, "airspeed_mps": 42, "heading_deg": 85, "pitch_deg": 3, "roll_deg": -2, "latitude": 12.9, "longitude": 77.6},
+    "propulsion": {"rpm": 4800, "engine_temp_c": 190, "battery_voltage": 14.2, "current_a": 12.3, "fuel_percent": 74},
+    "environment": {"temperature_c": 28, "humidity_percent": 55, "wind_speed_mps": 5, "wind_direction_deg": 220, "turbulence": 0.2, "visibility_m": 9000, "dust_level": 0.1, "ash_level": 0},
+    "faults": [],
+    "mission": {"progress": 0.6, "current_waypoint": 3, "total_waypoints": 8, "elapsed_seconds": 345}
+  },
+  "fault": {"code": "GNSS DEGRADED", "description": "GNSS accuracy degraded."}
+}

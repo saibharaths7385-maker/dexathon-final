@@ -1,0 +1,236 @@
+﻿"""Transparent reduced-order demonstrator; constants are synthetic, not OEM limits.
+
+No learned model or certified airworthiness prediction is implied. The pure model
+is shared by the live service and counterfactual forecasts to prevent drift.
+"""
+from dataclasses import dataclass, field
+from math import exp
+
+from .schemas import Controls
+
+MODEL_VERSION = "reduced-order-2.1.0"
+# name, unit, nominal envelope, absolute display range, residual tolerance, weight, time constant
+SIGNALS = {
+    "rpm": ("Engine speed", "rpm", 2000, 5500, 0, 6500, 350, .10, 2),
+    "egt": ("Exhaust gas", "Â°C", 350, 820, 0, 1000, 70, .18, 8),
+    "cht": ("Cylinder head", "Â°C", 70, 220, 0, 300, 25, .17, 15),
+    "oil_temperature": ("Oil temperature", "Â°C", 60, 120, 0, 180, 20, .15, 20),
+    "oil_pressure": ("Oil pressure", "bar", 2.5, 6, 0, 8, 1.2, .20, 4),
+    "fuel_flow": ("Fuel flow", "L/h", 8, 32, 0, 40, 6, .08, 3),
+    "vibration": ("Vibration", "mm/s RMS", 0, 5, 0, 15, 2.5, .12, 3),
+}
+
+
+def clamp(value, low=0.0, high=1.0):
+    return max(low, min(high, value))
+
+
+def expected_state(controls: Controls):
+    load = controls.rpm_target / 5800
+    ambient = controls.ambient_temperature - 25
+    return {
+        "rpm": controls.rpm_target,
+        "egt": 420 + 330 * load + ambient * .7,
+        "cht": 85 + 115 * load + ambient * .65,
+        "oil_temperature": 58 + 44 * load + ambient * .5,
+        "oil_pressure": 3.2 + 1.8 * load - ambient * .015,
+        "fuel_flow": 5 + 23 * load ** 1.6,
+        "vibration": .65 + 1.4 * load ** 2,
+    }
+
+
+@dataclass
+class EngineState:
+    sensors: dict = field(default_factory=lambda: expected_state(Controls()))
+    # Demonstrator starts with 18% of its assumed wear budget consumed.
+    wear: float = .18
+    elapsed_seconds: float = 0.0
+    samples: int = 0
+    # Fault time is separate from flight time so a new injection always begins
+    # at a physically interpretable, zero-severity state.
+    fault_elapsed_seconds: float = 0.0
+
+
+def damage_rate(sensors, controls):
+    """Fraction of wear budget / hour. Baseline assumed life: 800 hours."""
+    load = max(.2, sensors["rpm"] / 4800)
+    thermal = max(0, (sensors["cht"] - 180) / 60) + max(0, (sensors["oil_temperature"] - 105) / 40)
+    lubrication = max(0, 3.0 - sensors["oil_pressure"])
+    vibration = max(0, sensors["vibration"] - 2) / 3
+    expected = expected_state(controls)
+    combustion = max(0, (sensors["egt"] - expected["egt"]) / 70)
+    starvation = max(0, 1 - sensors["fuel_flow"] / expected["fuel_flow"] - .12) * 4
+    return (load ** 2.2 * (1 + thermal ** 2 * 3 + lubrication ** 2 * 5 + vibration ** 2 * 2 + combustion ** 2 * 2 + starvation ** 2 * 3)
+            * (1 + .8 * controls.mission.environmental_severity) / 800)
+
+
+def advance(state: EngineState, controls: Controls, dt: float, *, noise=True):
+    target = expected_state(controls)
+    fuel = controls.fuel_flow_multiplier
+    target["fuel_flow"] *= fuel
+    target["egt"] += (1 - fuel) * 180
+    target["cht"] += (1 - fuel) * 35
+    # Fault signatures are deterministic, monotonic ramps.  The simulation uses
+    # an intentionally accelerated demonstration clock: 45 seconds represents
+    # the early-detection window, while sensor thermal time constants still make
+    # the displayed response smooth.
+    fault = controls.scenario
+    severity = 1 - exp(-state.fault_elapsed_seconds / 45) if fault != "nominal" else 0
+    if fault == "engine_degradation":
+        target["vibration"] += 7.0 * severity
+        target["fuel_flow"] *= 1 + .18 * severity
+        target["egt"] += 72 * severity
+        target["oil_temperature"] += 18 * severity
+    elif fault == "sensor_bias":
+        # The physical plant remains nominal; only the indicated channels drift.
+        target["egt"] += 62 * severity
+        target["oil_pressure"] -= .75 * severity
+    elif fault == "fuel_leak":
+        target["fuel_flow"] *= 1 - .38 * severity
+        target["oil_pressure"] -= .55 * severity
+        target["egt"] += 45 * severity
+    elif fault == "compressor_fouling":
+        target["fuel_flow"] *= 1 + .24 * severity
+        target["egt"] += 55 * severity
+        target["vibration"] += .9 * severity
+    elif fault in ("cooling_loss", "engine_overheating"):
+        target["cht"] += 85
+        target["egt"] += 90
+        target["oil_temperature"] += 38
+    elif controls.scenario == "oil_leak":
+        target["oil_pressure"] = 1.4
+        target["oil_temperature"] += 42
+        target["vibration"] += 2
+    elif controls.scenario == "bearing_wear":
+        target["vibration"] += 6.8
+        target["oil_temperature"] += 24
+        target["oil_pressure"] -= .8
+    elif controls.scenario == "fuel_restriction":
+        target["fuel_flow"] *= .62
+        target["rpm"] *= .87
+        target["egt"] += 100
+    elif controls.scenario == "sensor_drift":
+        # Instrumentation bias creates a residual signature while base physics remains nominal.
+        target["egt"] += 48
+        target["oil_pressure"] -= .55
+    state.elapsed_seconds += dt
+    for key, spec in SIGNALS.items():
+        # No random or pseudo-random telemetry is introduced: every displayed
+        # change is the response to an operating point or fault signature.
+        state.sensors[key] += (target[key] - state.sensors[key]) * (1 - exp(-dt / spec[8]))
+    state.wear = clamp(state.wear + damage_rate(state.sensors, controls) * dt / 3600)
+    state.samples += 1
+    if fault != "nominal":
+        state.fault_elapsed_seconds += dt
+
+
+def assess(state: EngineState, controls: Controls):
+    expected = expected_state(controls)
+    features, violations = [], []
+    for key, spec in SIGNALS.items():
+        name, unit, low, high, minimum, maximum, tolerance, weight, _ = spec
+        value = state.sensors[key]
+        residual = value - expected[key]
+        deviation = abs(residual) / tolerance
+        outside = max(0, low - value, value - high) / tolerance
+        penalty = weight * clamp(max(deviation - .12, outside * 1.5) / 2) * 100
+        status = "critical" if outside > .5 or deviation > 2 else "warning" if outside > 0 or deviation > .8 else "nominal"
+        if outside > 0:
+            violations.append(key)
+        features.append({"key": key, "label": name, "unit": unit, "value": round(value, 2),
+                         "expected": round(expected[key], 2), "residual": round(residual, 2),
+                         "penalty": round(penalty, 3), "status": status,
+                         "normal_min": low, "normal_max": high, "min": minimum, "max": maximum})
+    total = sum(item["penalty"] for item in features)
+    fault_severity = 1 - exp(-state.fault_elapsed_seconds / 45) if controls.scenario != "nominal" else 0
+    scenario_health_penalty = {"engine_degradation": 18, "compressor_fouling": 8, "fuel_leak": 5}.get(controls.scenario, 0) * fault_severity
+    health = round(clamp(1 - state.wear * .25 - (total + scenario_health_penalty) / 100) * 100, 1)
+    rate = damage_rate(state.sensors, controls)
+    rul = max(0, (1 - state.wear) / rate)
+    # Exponential survival with an explicit stress/condition-dependent hazard.
+    hazard = (1 / max(rul, 1) + ((100 - health) / 100) ** 3 * .12) * (1 + controls.mission.environmental_severity)
+    reliability = 100 * exp(-hazard * controls.mission.duration_hours) if state.wear < 1 else 0
+    # Detection certainty begins cautiously at injection and rises as the
+    # deterministic signature accumulates; nominal confidence remains support,
+    # not a claim of fault probability.
+    evidence = fault_severity * 34 + min(state.fault_elapsed_seconds, 90) / 90 * 12
+    confidence = max(35, min(99, 58 + min(state.samples, 60) / 60 * 14 + evidence - (2 if controls.scenario == "sensor_bias" and fault_severity < .25 else 0)))
+    # Transparent condition surrogate complements the deterministic physics calculation.
+    ai_health = clamp(1 - state.wear * .22 - sum(min(1, abs(item["residual"]) / max(item["normal_max"] - item["normal_min"], 1)) * .55 for item in features)) * 100
+    disagreement = abs(health - ai_health)
+    fusion_weight = .62 if state.samples >= 20 else .78
+    hybrid_health = health * fusion_weight + ai_health * (1 - fusion_weight)
+    agreement = clamp(100 - disagreement * 3.5)
+    hybrid_confidence = clamp(confidence * .72 + agreement * .28)
+    faults = []
+    def fault(mode, reason, action, priority, hours, keys):
+        faults.append({"id": mode.lower().replace(" ", "_"), "failure_mode": mode, "reason": reason,
+                       "recommended_action": action, "priority": priority, "estimated_hours": hours,
+                       "features": keys})
+    if controls.scenario == "engine_degradation" and fault_severity > .18:
+        fault("Engine degradation", "Progressive vibration, fuel-burn and EGT growth indicate rotating-assembly efficiency loss.",
+              "Inspect bearings, mounts and combustion condition; schedule a borescope and oil-debris check.", "high", 6.0, ["vibration", "fuel_flow", "egt"])
+    elif controls.scenario == "sensor_bias" and fault_severity > .12:
+        fault("Sensor bias", "Measured EGT and oil-pressure residuals are increasing while the physical operating point remains stable.",
+              "Cross-check instrumentation against an independent reference and recalibrate the affected channels.", "high", 1.0, ["egt", "oil_pressure"])
+    elif controls.scenario == "fuel_leak" and fault_severity > .12:
+        fault("Fuel leak", "Fuel delivery flow and pressure are declining while the calculated consumption anomaly grows.",
+              "Inspect fuel lines, tank connections and seals; isolate the leak before the next mission.", "critical", 2.0, ["fuel_flow", "oil_pressure", "egt"])
+    elif controls.scenario == "compressor_fouling" and fault_severity > .12:
+        fault("Compressor fouling", "Pressure-ratio proxy and compressor efficiency are falling as fuel burn rises.",
+              "Inspect and clean the compressor flow path; verify performance after maintenance.", "high", 4.0, ["fuel_flow", "egt", "vibration"])
+    elif state.sensors["oil_pressure"] < 2.5:
+        fault("Lubrication pressure loss", "Oil pressure is below the 2.5 bar demonstration envelope.",
+              "Inspect oil lines, seals, filter and pump; verify pressure with an independent gauge.", "critical", 3.0, ["oil_pressure", "oil_temperature"])
+    if state.sensors["cht"] > 220 or state.sensors["oil_temperature"] > 120:
+        fault("Thermal overload", "Cylinder head or oil temperature exceeds the demonstration thermal envelope.",
+              "Inspect cooling airflow, fins and oil cooler; perform a controlled ground thermal check.", "high", 2.5, ["cht", "oil_temperature", "egt"])
+    if state.sensors["vibration"] > 5:
+        fault("Rotating assembly anomaly", "Vibration exceeds 5 mm/s RMS; bearing wear or imbalance is a possible cause.",
+              "Inspect mounts and propeller balance; check bearing clearances and oil debris.", "high", 5.0, ["vibration", "oil_temperature"])
+    if state.sensors["fuel_flow"] < expected["fuel_flow"] * .8:
+        fault("Fuel delivery anomaly", "Fuel flow is more than 20% below the operating-point expectation.",
+              "Inspect fuel filter, delivery pressure and injector flow; check mixture calibration.", "high", 2.0, ["fuel_flow", "egt", "rpm"])
+    if abs(state.sensors["rpm"] - expected["rpm"]) > 700 or state.sensors["egt"] > 820:
+        fault("Power or combustion deviation", "Speed tracking or exhaust temperature is outside the demonstration envelope.",
+              "Check governor response, ignition timing and compression against the engine manual.", "high", 3.5, ["rpm", "egt"])
+    covered = {key for item in faults for key in item["features"]}
+    uncovered = [key for key in violations if key not in covered]
+    if uncovered:
+        fault("Sensor envelope excursion", "Channels outside the demonstration envelope: " + ", ".join(uncovered) + ".",
+              "Verify sensor calibration and operating conditions; inspect affected systems against the engine manual.", "high", 1.5, uncovered)
+    if not faults:
+        fault("Routine condition inspection", "No monitored fault rule is currently active.",
+              "Continue scheduled inspection; review oil trend and sensor calibration at the next service.", "routine", .5, [])
+    faults.sort(key=lambda f: {"critical": 0, "high": 1, "routine": 2}[f["priority"]])
+    for item in features:
+        item["importance"] = round(item["penalty"] / total * 100, 1) if total else 0
+    decision = "HOLD / INSPECT" if any(f["priority"] == "critical" for f in faults) or reliability < 80 or health < 55 else "REVIEW REQUIRED" if reliability < 95 or any(f["priority"] == "high" for f in faults) else "WITHIN DEMO ENVELOPE"
+    pressure_ratio = 8.6 - (1.75 * fault_severity if controls.scenario == "compressor_fouling" else 0)
+    compressor_efficiency = 86 - (18 * fault_severity if controls.scenario == "compressor_fouling" else 0)
+    fuel_pressure = max(0, 4.8 - (2.1 * fault_severity if controls.scenario == "fuel_leak" else 0))
+    fuel_anomaly = (38 * fault_severity if controls.scenario == "fuel_leak" else 18 * fault_severity if controls.scenario in ("engine_degradation", "compressor_fouling") else 0)
+    return {
+        "health_index": health, "wear_percent": round(state.wear * 100, 3),
+        "rul": {"hours": round(rul, 1), "previous_hours": round(max(0, rul + rate / 60), 1), "delta_hours": round(-rate / 60, 2), "rate_hours_per_minute": round(-rate / 60, 3), "lower_hours": round(rul * .65, 1), "upper_hours": round(rul * 1.35, 1),
+                "wear_rate_per_hour": round(rate, 7), "interval_kind": "Assumed Â±35% sensitivity band; not a calibrated confidence interval"},
+        "fault_progress": {"scenario": controls.scenario, "elapsed_seconds": round(state.fault_elapsed_seconds, 1), "severity_percent": round(fault_severity * 100, 1),
+                           "detected": fault_severity >= .12, "anomaly_detected": fault_severity >= .30, "root_cause_identified": fault_severity >= .48,
+                           "maintenance_ready": fault_severity >= .65},
+        "performance": {"pressure_ratio": round(pressure_ratio, 2), "compressor_efficiency_percent": round(compressor_efficiency, 1),
+                        "fuel_pressure_bar": round(fuel_pressure, 2), "range_percent": round(100 - fuel_anomaly * .9, 1), "fuel_consumption_anomaly_percent": round(fuel_anomaly, 1),
+                        "sensor_bias_magnitude": round(max(abs(next(item["residual"] for item in features if item["key"] == "egt")), abs(next(item["residual"] for item in features if item["key"] == "oil_pressure"))), 2) if controls.scenario == "sensor_bias" else 0},
+        "mission": {**controls.mission.model_dump(), "reliability_percent": round(reliability, 2), "mission_success_probability": round(reliability, 2),
+                    "engine_failure_probability": round(100 - reliability, 2), "mission_availability_percent": round(clamp((health + reliability) / 2), 2),
+                    "hazard_per_hour": round(hazard, 6), "decision": decision},
+        "hybrid": {"physics_health": round(health, 1), "ai_health": round(ai_health, 1), "fused_health": round(hybrid_health, 1),
+                   "confidence_percent": round(hybrid_confidence, 1), "agreement_percent": round(agreement, 1),
+                   "disagreement_points": round(disagreement, 1), "method": "Reduced-order digital twin + residual condition surrogate",
+                   "reason": "Models agree within the operating envelope." if disagreement < 8 else "Sensor-residual condition estimate diverges from the physics model; verify instrumentation and operating assumptions."},
+        "explainability": {"confidence_percent": round(confidence, 1), "confidence_kind": "Heuristic model support, not fault probability",
+                           "method": "Weighted physics residuals + envelope rules", "features": sorted(features, key=lambda f: f["penalty"], reverse=True),
+                           "reasoning": [f["reason"] for f in faults], "health_penalty": round(total, 3), "wear_penalty": round(state.wear * 25, 3)},
+        "maintenance": faults, "sensors": {k: round(v, 2) for k, v in state.sensors.items()},
+        "expected": {k: round(v, 2) for k, v in expected.items()}, "model_version": MODEL_VERSION,
+    }
+

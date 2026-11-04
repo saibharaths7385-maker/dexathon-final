@@ -1,0 +1,16 @@
+[build]
+  command = "cd frontend && npm install && npm run build"
+  publish = "frontend/dist"
+
+[build.environment]
+  NODE_VERSION = "18"
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# IMPORTANT: Set VITE_OPENWEATHER_API_KEY in Netlify dashboard:
+# 1. Go to Site Settings > Environment Variables
+# 2. Add: VITE_OPENWEATHER_API_KEY = your_actual_api_key
+# 3. Get your key from: https://openweathermap.org/api
