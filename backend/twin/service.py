@@ -2,7 +2,7 @@
 import copy
 import hashlib
 import json
-import sqlite3
+import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,6 +11,7 @@ from time import monotonic
 from .model import EngineState, advance, assess, damage_rate, clamp
 from .schemas import Controls, Telemetry, WhatIf
 from .decision_support import INTELLIGENCE_RULESET, RULESET, evaluate, intelligence_recommendations
+from .storage import connect_database
 
 
 def utcnow():
@@ -18,11 +19,23 @@ def utcnow():
 
 
 class TwinService:
-    def __init__(self, database: str):
+    def __init__(
+        self,
+        database: str,
+        *,
+        encryption_required: bool | None = None,
+        database_key: str | None = None,
+    ):
         self.lock = threading.RLock()
-        if database != ":memory:":
-            Path(database).parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(database, check_same_thread=False)
+        if encryption_required is None:
+            encryption_required = os.getenv(
+                "TWIN_DATABASE_ENCRYPTION_REQUIRED", "true"
+            ).strip().lower() in {"1", "true", "yes", "on"}
+        self.db = connect_database(
+            database,
+            key=database_key or os.getenv("TWIN_DATABASE_KEY"),
+            encryption_required=encryption_required,
+        )
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("CREATE TABLE IF NOT EXISTS checkpoint (id INTEGER PRIMARY KEY, payload TEXT NOT NULL)")
         self.db.execute("CREATE TABLE IF NOT EXISTS history (sequence INTEGER PRIMARY KEY, payload TEXT NOT NULL)")

@@ -9,6 +9,7 @@ from fastapi import APIRouter, Body, HTTPException, Query, Request, WebSocket, W
 from .laptop1 import Laptop1TelemetryClient
 from .schemas import Controls, DemoReset, OperatorDecisionSubmission, ReplayControl, Telemetry, TelemetrySourceSelection, WhatIf
 from .service import TwinService
+from .storage import settings_from_env
 from .telemetry_sources import TelemetrySources
 
 logger = logging.getLogger(__name__)
@@ -17,7 +18,12 @@ router = APIRouter(prefix="/api/v2", tags=["Digital Twin V2"])
 
 @asynccontextmanager
 async def lifespan(app):
-    service = TwinService(os.getenv("TWIN_DATABASE", "data/twin.sqlite3"))
+    storage = settings_from_env()
+    service = TwinService(
+        storage.database,
+        encryption_required=storage.encryption_required,
+        database_key=storage.key,
+    )
     app.state.twin = service
     app.state.twin_error = None
     laptop1_client = Laptop1TelemetryClient()
