@@ -173,7 +173,7 @@ export default function JudgeDemoPage() {
           busy={busy}
           onStart={startJudgeDemo}
           onPause={running => control({ running })}
-          onRestart={() => startJudgeDemo(data?.controls?.scenario || 'nominal')}
+          onRestart={() => data?.controls?.scenario && startJudgeDemo(data.controls.scenario)}
         />
       )}
     </div>

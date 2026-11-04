@@ -1,10 +1,16 @@
-import { RefreshCw, TriangleAlert, Plane, Activity, Wrench } from 'lucide-react'
+import { RefreshCw, TriangleAlert, Plane } from 'lucide-react'
 import FleetCommandCenter from '../v2/FleetCommandCenter'
 import { useFleet } from '../v2/useFleet'
 import '../v2/v2.css'
 
 function FleetCard({ id, status, health, statusLabel, icon: Icon }) {
-  const statusColor = status === 'ACTIVE' ? '#63ddbc' : status === 'STANDBY' ? '#ffb955' : '#ff7b6b'
+  const statusColor = ['ACTIVE', 'READY', 'NOMINAL'].includes(status.toUpperCase())
+    ? '#63ddbc'
+    : ['WARNING', 'MONITOR', 'STANDBY'].includes(status.toUpperCase())
+      ? '#ffb955'
+      : ['CRITICAL', 'MAINTENANCE', 'MAINTENANCE REQUIRED'].includes(status.toUpperCase())
+        ? '#ff7b6b'
+        : '#8ea8b5'
 
   return (
     <article
@@ -67,9 +73,20 @@ export default function Fleet() {
           </div>
         </div>
         <div className="metric-grid" style={{ marginTop: '16px' }}>
-          <FleetCard id="UAV-01" status="ACTIVE" health="94%" statusLabel="Mission Ready" icon={Plane} />
-          <FleetCard id="UAV-02" status="STANDBY" health="97%" statusLabel="Available" icon={Activity} />
-          <FleetCard id="UAV-03" status="MAINTENANCE" health="72%" statusLabel="Inspection Required" icon={Wrench} />
+          {!fleet
+            ? <p className="fleet-empty">Loading fleet assets from the twin service…</p>
+            : fleet.assets?.length
+            ? fleet.assets.map((asset) => (
+              <FleetCard
+                key={asset.engine_id}
+                id={asset.engine_id}
+                status={asset.readiness || 'STATUS NOT PROVIDED'}
+                health={Number.isFinite(asset.health_index) ? `${asset.health_index}%` : 'Unavailable'}
+                statusLabel={[asset.callsign, asset.sector].filter(Boolean).join(' · ') || 'Asset details unavailable'}
+                icon={Plane}
+              />
+            ))
+            : <p className="fleet-empty">Fleet assets are unavailable in the current API response.</p>}
         </div>
       </section>
 

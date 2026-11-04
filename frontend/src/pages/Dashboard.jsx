@@ -1,19 +1,32 @@
 import { Link } from 'react-router-dom'
-import { Award, Layers, ArrowRight, Sparkles } from 'lucide-react'
+import { Award, Layers, ArrowRight, Battery, Fuel, Gauge, Radio, Sparkles, Thermometer, Zap } from 'lucide-react'
 import { useMission } from '../hooks/useMission'
 import { HealthScore, MissionRecommendation, RemainingLife } from '../components/MissionMetrics'
 import { TelemetryChart } from '../components/Charts'
 import MissionEnvironment from '../components/MissionEnvironment'
-import MissionDecisionCard from '../components/MissionDecisionCard'
+import { useTwin } from '../v2/useTwin'
 
-function MetricCard({ label, value, unit, detail, tone = '' }) {
-  return (
-    <article className={`metric-card ${tone}`}>
-      <span>{label}</span>
-      <strong>{value}<small>{unit}</small></strong>
-      <p>{detail}</p>
-    </article>
-  )
+const telemetryReadings = [
+  { label: 'ENGINE SPEED', field: 'rpm', unit: 'rpm', digits: 0, Icon: Gauge },
+  { label: 'EXHAUST GAS TEMP', field: 'egt', unit: '°C', digits: 1, Icon: Thermometer },
+  { label: 'CYLINDER HEAD TEMP', field: 'cht', unit: '°C', digits: 1, Icon: Thermometer },
+  { label: 'FUEL FLOW', field: 'fuel_flow', unit: 'L/h', digits: 2, Icon: Fuel },
+  { label: 'BATTERY VOLTAGE', field: 'battery_voltage', unit: 'V', digits: 2, Icon: Battery },
+  { label: 'CURRENT', field: 'current_a', unit: 'A', digits: 2, Icon: Zap },
+]
+
+const connectionLabels = {
+  connecting: 'CONNECTING',
+  streaming: 'LIVE STREAM',
+  polling: 'API POLLING',
+  reconnecting: 'RECONNECTING',
+  offline: 'OFFLINE',
+}
+
+function formatSampleTime(timestamp) {
+  if (typeof timestamp !== 'string' || !timestamp) return 'Unavailable'
+  const parsed = new Date(timestamp)
+  return Number.isNaN(parsed.getTime()) ? timestamp : parsed.toLocaleString()
 }
 
 export function Inject() {
@@ -56,177 +69,91 @@ export function Recommendation() {
 
 export default function Dashboard() {
   const mission = useMission()
-  const latest = mission.latest
-  const readings = [
-    ['RPM', 'rpm', 'RPM', 0],
-    ['EGT', 'egt', '°C', 1],
-    ['CHT', 'cht', '°C', 1],
-    ['FUEL FLOW', 'fuel_flow', 'L/hr', 2],
-    ['VIBRATION', 'vibration', 'mm/s', 2],
-    ['OIL TEMPERATURE', 'oil_temperature', '°C', 1],
+  const twin = useTwin()
+  const latest = twin.snapshot || twin.history.at(-1)
+  const sensors = latest?.sensors
+  const apiSource = typeof twin.snapshot?.source === 'string' && twin.snapshot.source
+    ? twin.snapshot.source.toUpperCase().replaceAll('_', ' ')
+    : 'TWIN API'
+  const hasTwinData = Boolean(latest)
+  const isConnected = twin.connection === 'streaming' || twin.connection === 'polling'
+  const chartData = twin.history.slice(-60).map((sample) => ({
+    ...sample.sensors,
+    time: formatSampleTime(sample.timestamp),
+  }))
+  const telemetryCharts = [
+    ['rpm', 'ENGINE SPEED', '#53c7ed', 'rpm'],
+    ['egt', 'EXHAUST GAS TEMPERATURE', '#8da9f4', '°C'],
+    ['cht', 'CYLINDER HEAD TEMPERATURE', '#69b7db', '°C'],
+    ['fuel_flow', 'FUEL FLOW', '#a7b8e8', 'L/h'],
   ]
 
   return (
     <div className="dashboard-wrapper">
       <div className="dashboard-content">
-        <section
-          style={{
-            marginBottom: '25px',
-            padding: '24px 28px',
-            borderRadius: '10px',
-            background: 'linear-gradient(135deg, rgba(19, 39, 48, 0.95), rgba(11, 20, 26, 0.95))',
-            border: '1px solid rgba(99, 221, 188, 0.2)',
-          }}
-        >
-        <div>
-          <h1
-            style={{
-              fontSize: '28px',
-              fontWeight: '700',
-              letterSpacing: '0.05em',
-              color: '#f0f7f7',
-              margin: '0 0 8px 0',
-            }}
-          >
-            SKYNEX
-          </h1>
-          <p
-            style={{
-              fontSize: '13px',
-              color: '#88a3ad',
-              margin: 0,
-              letterSpacing: '0.02em',
-            }}
-          >
-            AI-Powered Digital Twin for UAV Engine Health Monitoring
-          </p>
-        </div>
-      </section>
-
-      <section className="page-title">
-        <div>
-          <span className="eyebrow">UAV-01 · PROPULSION SYSTEM · SIMULATION</span>
-          <h2>Mission overview</h2>
-          <p>Engine condition snapshot for the local mission demonstrator.</p>
-        </div>
-        <div className="mission-state" role="status"><i /> DEMO · {mission.mission}</div>
-      </section>
-
-      {/* Judge demo quick access */}
-      <section
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          flexWrap: 'wrap',
-          gap: '14px',
-          marginBottom: '20px',
-          padding: '14px 20px',
-          borderRadius: '10px',
-          background: 'linear-gradient(135deg, rgba(19, 39, 48, 0.95), rgba(11, 20, 26, 0.95))',
-          border: '1px solid rgba(99, 221, 188, 0.25)',
-          boxShadow: '0 8px 24px rgba(0, 0, 0, 0.25)',
-        }}
-        aria-label="Judge evaluation quick access"
-      >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <div
-            style={{
-              width: '36px',
-              height: '36px',
-              borderRadius: '8px',
-              background: 'rgba(99, 221, 188, 0.15)',
-              border: '1px solid rgba(99, 221, 188, 0.35)',
-              color: '#63ddbc',
-              display: 'grid',
-              placeItems: 'center',
-            }}
-          >
-            <Award size={20} />
+        <section className="dashboard-hero" aria-labelledby="mission-overview-title">
+          <div className="dashboard-identity">
+            <span className="eyebrow">SKYNEX 3.0 / UAV ENGINE DIGITAL TWIN</span>
+            <span className="simulation-badge">LOCAL FAULT INJECTION · SYNTHETIC</span>
           </div>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span
-                style={{
-                  font: "700 8px 'DM Mono', monospace",
-                  letterSpacing: '1px',
-                  color: '#63ddbc',
-                  background: 'rgba(99, 221, 188, 0.1)',
-                  padding: '2px 6px',
-                  borderRadius: '3px',
-                }}
-              >
-                JUDGE DEMO MODE
-              </span>
+          <div className="page-title">
+            <div>
+              <span className="eyebrow">MISSION CONTROL / PROPULSION SYSTEM</span>
+              <h2 id="mission-overview-title">Mission overview</h2>
+              <p>Aircraft status, source-reported telemetry and simulated mission assessment.</p>
             </div>
-            <h3 style={{ fontSize: '14px', fontWeight: '600', color: '#f0f7f7', margin: '4px 0 2px' }}>
-              Judge Demo Walkthrough & Architecture Diagrams
-            </h3>
-            <p style={{ fontSize: '11px', color: '#88a3ad', margin: 0 }}>
-              Launch 1-click deterministic fault scenarios (Engine Degradation, Compressor Fouling, Fuel Leak, Sensor Bias) or view aerospace SVG architecture diagrams.
-            </p>
+            <div className={`mission-state dashboard-api-status ${twin.connection}`} role="status">
+              <i /> TWIN API · {connectionLabels[twin.connection] || 'STATUS UNKNOWN'}
+            </div>
           </div>
-        </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <Link
-            to="/judge-demo"
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '6px',
-              padding: '8px 14px',
-              background: '#63ddbc',
-              color: '#0a1d19',
-              fontWeight: '600',
-              fontSize: '11px',
-              borderRadius: '6px',
-              textDecoration: 'none',
-              boxShadow: '0 0 16px rgba(99, 221, 188, 0.25)',
-            }}
-          >
-            <Sparkles size={13} />
-            <span>Launch Judge Demo</span>
-            <ArrowRight size={13} />
-          </Link>
-          <Link
-            to="/architecture"
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '6px',
-              padding: '8px 12px',
-              background: 'rgba(255, 255, 255, 0.05)',
-              border: '1px solid rgba(255, 255, 255, 0.12)',
-              color: '#c9d7de',
-              fontWeight: '500',
-              fontSize: '11px',
-              borderRadius: '6px',
-              textDecoration: 'none',
-            }}
-          >
-            <Layers size={13} />
-            <span>View Architecture</span>
-          </Link>
-        </div>
-      </section>
-
-      <div className="metric-grid">
-        <MetricCard label="HEALTH SCORE" value={mission.health} unit="/100" detail="Calculated from current telemetry" tone={mission.health < 60 ? 'red' : mission.health <= 85 ? 'amber' : 'green'} />
-        <MetricCard label="REMAINING USEFUL LIFE" value={mission.rul.toFixed(1)} unit="hrs" detail="Health-derived estimate" tone={mission.health < 60 ? 'red' : ''} />
-        <MetricCard label="CURRENT FAULT" value={mission.fault} detail="Live telemetry classification" tone={mission.faultClassification === 'HEALTHY' ? 'green' : 'amber'} />
-        <MetricCard label="MISSION STATUS" value={mission.mission} detail="Simulated mission state" />
-        <MetricCard label="MISSION RECOMMENDATION" value={mission.recommendation} detail="Threshold-based action" tone={mission.health < 60 ? 'red' : mission.health <= 85 ? 'amber' : 'green'} />
-      </div>
-
-      <MissionEnvironment />
+          <div className="dashboard-operations-strip" aria-label="Aircraft and mission overview">
+            <div>
+              <span>AIRCRAFT</span>
+              <strong>{twin.snapshot?.engine_id || 'UAV-01'}</strong>
+              <small>{twin.snapshot?.engine_id ? 'TWIN API' : 'DEMO AIRCRAFT'}</small>
+            </div>
+            <div>
+              <span>MISSION</span>
+              <strong>{twin.snapshot?.mission?.mission_id || mission.mission}</strong>
+              <small>{twin.snapshot?.mission?.decision || `LOCAL SIMULATION · ${mission.mission}`}</small>
+            </div>
+            <div>
+              <span>TELEMETRY SAMPLE</span>
+              <strong>{formatSampleTime(latest?.timestamp)}</strong>
+              <small>{hasTwinData ? apiSource : 'WAITING FOR API DATA'}</small>
+            </div>
+          </div>
+          <p className="dashboard-source-note">Twin telemetry is shown only when supplied by the API. Health, remaining life and mission recommendations below are local synthetic estimates, not aircraft operating limits or flight clearance.</p>
+        </section>
+        <section className="dashboard-quick-access" aria-label="Judge evaluation quick access">
+          <Award size={22} aria-hidden="true" />
+          <div>
+            <h3>Explore the demonstrator</h3>
+            <p>Run deterministic fault scenarios or inspect the digital twin architecture.</p>
+          </div>
+          <div className="dashboard-quick-actions">
+            <Link to="/judge-demo" className="dashboard-action primary">
+              <Sparkles size={15} aria-hidden="true" /> Launch Judge Demo <ArrowRight size={15} aria-hidden="true" />
+            </Link>
+            <Link to="/architecture" className="dashboard-action">
+              <Layers size={15} aria-hidden="true" /> View Architecture
+            </Link>
+          </div>
+        </section>
 
       <div className="overview-grid">
-        <Recommendation />
-        <section className="panel health-panel" aria-label="Engine health and remaining life">
-          <div className="dashboard-health">
+          <section className="dashboard-assessment-panel" aria-label="Mission assessment summary">
+            <div className="dashboard-assessment-heading">
+              <span className="eyebrow">LOCAL RULE-BASED ASSESSMENT · SYNTHETIC TELEMETRY</span>
+              <h2>Mission assessment summary</h2>
+              <p>This demonstrator recommendation is not an AI service response or flight authorization.</p>
+            </div>
+            <Recommendation />
+          </section>
+          <section className="panel health-panel" aria-label="Engine health and remaining life">
+            <div className="dashboard-health">
             <div>
-              <span className="eyebrow">PROPULSION READINESS</span>
+              <span className="eyebrow">SYNTHETIC ENGINE HEALTH</span>
               <HealthScore value={mission.health} />
             </div>
             <RemainingLife
@@ -241,58 +168,73 @@ export default function Dashboard() {
           </div>
         </section>
       </div>
-
-      <div className="mission-decision-section">
-        <MissionDecisionCard
-          health={mission.health}
-          rul={mission.rul}
-          fault={mission.fault}
-          faultClassification={mission.faultClassification}
-        />
-      </div>
       <section className="live-readouts" aria-labelledby="live-readouts-title">
         <div className="section-heading">
           <div>
-            <span className="eyebrow">UAV-01 · 1 HZ SYNTHETIC STREAM</span>
-            <h2 id="live-readouts-title">Live telemetry</h2>
+            <span className="eyebrow">SOURCE-REPORTED · TWIN API</span>
+            <h2 id="live-readouts-title">Engine telemetry</h2>
+            <p className="dashboard-section-note">Values are displayed only when present in the latest received API snapshot.</p>
           </div>
-          <div className="mission-state" role="status"><i /> REFRESHING EVERY 2 S</div>
+          <span className="dashboard-sample-time">Connection <b>{connectionLabels[twin.connection] || 'STATUS UNKNOWN'}</b></span>
         </div>
+        {twin.error && (
+          <div className="dashboard-data-alert" role="status">
+            <Radio size={16} aria-hidden="true" />
+            <span>{twin.error}</span>
+          </div>
+        )}
+        {!hasTwinData && !twin.error && (
+          <div className="dashboard-data-alert" role="status">
+            <Radio size={16} aria-hidden="true" />
+            <span>Telemetry is not available yet. No sensor values are being inferred or substituted.</span>
+          </div>
+        )}
+        {hasTwinData && !isConnected && (
+          <div className="dashboard-data-alert warning" role="status">
+            <Radio size={16} aria-hidden="true" />
+            <span>Telemetry link is {connectionLabels[twin.connection]?.toLowerCase() || 'unavailable'}; showing the last received snapshot.</span>
+          </div>
+        )}
         <div className="live-readout-grid">
-          {readings.map(([label, field, unit, digits]) => (
-            <article className="live-readout" key={field}>
-              <span>{label}</span>
-              <strong>{Number(latest?.[field] ?? 0).toFixed(digits)}<small>{unit}</small></strong>
-              <small className="readout-status">CURRENT SAMPLE</small>
-            </article>
-          ))}
+          {telemetryReadings.map(({ label, field, unit, digits, Icon }) => {
+            const value = sensors?.[field]
+            const available = typeof value === 'number' && Number.isFinite(value)
+            return (
+              <article className={`live-readout ${available ? '' : 'unavailable'}`} key={field}>
+                <div className="live-readout-heading">
+                  <span>{label}</span>
+                  <Icon size={16} aria-hidden="true" />
+                </div>
+                <strong>{available ? value.toFixed(digits) : '—'}<small>{unit}</small></strong>
+                <small className="readout-status">{available ? `${apiSource} SAMPLE` : 'NOT PROVIDED'}</small>
+              </article>
+            )
+          })}
         </div>
+        <p className="dashboard-sample-time">Sample time <b>{formatSampleTime(latest?.timestamp)}</b></p>
       </section>
       <section className="dashboard-live-charts" aria-label="Live engine telemetry charts">
         <div className="section-heading">
           <div>
-            <span className="eyebrow">ROLLING SENSOR HISTORY</span>
-            <h2>Live engine trends</h2>
+            <span className="eyebrow">API HISTORY · SOURCE-REPORTED</span>
+            <h2>Engine trends</h2>
+            <p className="dashboard-section-note">{chartData.length ? `${chartData.length} received samples` : 'No API history samples available.'}</p>
           </div>
         </div>
         <div className="dashboard-chart-grid">
-          {[
-            ['rpm', 'ENGINE RPM', '#35b9ff'],
-            ['egt', 'EXHAUST GAS TEMPERATURE', '#ff7b6b'],
-            ['cht', 'CYLINDER HEAD TEMPERATURE', '#ffb955'],
-            ['fuel_flow', 'FUEL FLOW', '#9b8cff'],
-            ['vibration', 'VIBRATION', '#45d7aa'],
-          ].map(([field, title, color]) => (
+          {telemetryCharts.map(([field, title, color, unit]) => (
             <TelemetryChart
               key={field}
-              data={mission.telemetry.slice(-60)}
+              data={chartData}
               field={field}
               title={title}
               color={color}
+              unit={unit}
             />
           ))}
         </div>
       </section>
+      <MissionEnvironment />
       <Inject />
       </div>
       <svg

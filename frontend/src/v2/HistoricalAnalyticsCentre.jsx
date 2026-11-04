@@ -17,6 +17,7 @@ function Trend({ sensor, records }) {
 export default function HistoricalAnalyticsCentre() {
   const [state, setState] = useState({ status: 'loading', records: [], faults: [], missions: [], error: '', duplicates: 0 })
   const [refresh, setRefresh] = useState(0)
+  const [windowDays, setWindowDays] = useState('all')
   useEffect(() => {
     const controller = new AbortController()
     Promise.all([getTwinHistory(HISTORICAL_LIMIT, controller.signal), getTwinFaultHistory(HISTORICAL_LIMIT, controller.signal), getTwinMissions(200, controller.signal)])
@@ -28,14 +29,21 @@ export default function HistoricalAnalyticsCentre() {
       }).catch(error => { if (error.name !== 'AbortError') setState(current => ({ ...current, status: 'error', error: error.message || 'Historical analytics unavailable.' })) })
     return () => controller.abort()
   }, [refresh])
-  const coverage = useMemo(() => timeCoverage(state.records), [state.records])
-  const quality = useMemo(() => dataQuality(state.records), [state.records])
+  const cutoff = windowDays === 'all' ? null : Date.now() - Number(windowDays) * 24 * 60 * 60 * 1000
+  const records = useMemo(() => cutoff === null
+    ? state.records
+    : state.records.filter(record => Date.parse(record.timestamp) >= cutoff), [cutoff, state.records])
+  const faults = useMemo(() => cutoff === null
+    ? state.faults
+    : state.faults.filter(record => Date.parse(record.timestamp) >= cutoff), [cutoff, state.faults])
+  const coverage = useMemo(() => timeCoverage(records), [records])
+  const quality = useMemo(() => dataQuality(records), [records])
   const trend = trendUnavailable()
-  const provenance = provenanceLabel(state.records)
+  const provenance = provenanceLabel(records)
   return <section className="historical-analytics-centre" id="historical-analytics" aria-label="Historical analytics and predictive intelligence">
-    <header className="historical-heading"><div><span className="v-eyebrow"><BarChart3 size={12}/> PHASE 7.6 · HISTORICAL INTELLIGENCE</span><h2>HISTORICAL ANALYTICS &amp; PREDICTIVE INTELLIGENCE</h2><p>Historical engine behaviour, mission trends and explainable predictive insights.</p></div><button className="v-icon-button" aria-label="Refresh historical analytics" onClick={() => setRefresh(value => value + 1)}><RefreshCw size={15}/></button></header>
+    <header className="historical-heading"><div><span className="v-eyebrow"><BarChart3 size={12}/> STORED TWIN HISTORY · API SOURCE</span><h2>Stored telemetry history</h2><p>Read-only sensor history and mission records returned by the existing twin service.</p></div><div className="historical-controls"><label>TIME RANGE<select aria-label="Historical time range" value={windowDays} onChange={event => setWindowDays(event.target.value)}><option value="all">All returned history</option><option value="1">Last 24 hours</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option></select></label><button className="v-icon-button" aria-label="Refresh historical analytics" onClick={() => setRefresh(value => value + 1)}><RefreshCw size={15}/></button></div></header>
     {state.status === 'loading' && <div className="historical-state">LOADING HISTORICAL DATA</div>}
     {state.status === 'error' && <div className="historical-state error"><AlertTriangle size={16}/> HISTORICAL ANALYTICS UNAVAILABLE · {state.error}</div>}
-    {state.status === 'ready' && <><div className="historical-scope"><span>RECORDS <b>{quality.totalRecords}</b></span><span>VALID READINGS <b>{quality.valid}</b></span><span>MISSING <b>{quality.missing}</b></span><span>INVALID <b>{quality.invalid}</b></span><span>DUPLICATES EXCLUDED <b>{state.duplicates}</b></span><span>PROVENANCE <b>{provenance}</b></span></div><div className="historical-coverage"><span><Database size={14}/> TIME COVERAGE <b>{formatTime(coverage.start)} → {formatTime(coverage.end)}</b></span><span>MISSION SCOPE <b>{state.missions.length ? `${state.missions.length} persisted missions` : 'Not available'}</b></span><span>SCENARIO <b>Not available in history records</b></span></div><div className="historical-chart-grid">{Object.keys(HISTORICAL_SENSORS).map(sensor => <Trend key={sensor} sensor={sensor} records={state.records}/>)}</div><div className="historical-lower-grid"><section className="historical-panel"><header><span className="v-eyebrow">WARNING HISTORY</span><b>{state.faults.length ? state.faults.length : 'NOT AVAILABLE'}</b></header>{state.faults.length ? <div className="historical-warning-list">{state.faults.slice(0, 20).map((item, index) => <div key={`${item.sequence}-${index}`}><b>{item.fault?.failure_mode || item.fault?.id || 'Finding not provided'}</b><span>{item.mission_id || 'Mission not provided'} · {formatTime(item.timestamp)}</span></div>)}</div> : <div className="historical-empty">WARNING HISTORY NOT AVAILABLE</div>}</section><section className="historical-panel"><header><span className="v-eyebrow">PREDICTIVE INTELLIGENCE</span><b>{trend.status}</b></header><div className="historical-empty">TREND ANALYSIS NOT AVAILABLE<div>{trend.reason}</div></div></section></div></>}
+    {state.status === 'ready' && <><div className="historical-scope"><span>RECORDS IN RANGE <b>{quality.totalRecords}</b></span><span>VALID READINGS <b>{quality.valid}</b></span><span>MISSING <b>{quality.missing}</b></span><span>INVALID <b>{quality.invalid}</b></span><span>DUPLICATES EXCLUDED <b>{state.duplicates}</b></span><span>PROVENANCE <b>{provenance}</b></span></div><div className="historical-coverage"><span><Database size={14}/> TIME COVERAGE <b>{formatTime(coverage.start)} → {formatTime(coverage.end)}</b></span><span>MISSION SCOPE <b>{state.missions.length ? `${state.missions.length} persisted missions` : 'Not available'}</b></span><span>SCENARIO <b>Not available in history records</b></span></div><div className="historical-chart-grid">{Object.keys(HISTORICAL_SENSORS).map(sensor => <Trend key={sensor} sensor={sensor} records={records}/>)}</div><div className="historical-lower-grid"><section className="historical-panel"><header><span className="v-eyebrow">WARNING HISTORY</span><b>{faults.length ? faults.length : 'NOT AVAILABLE'}</b></header>{faults.length ? <div className="historical-warning-list">{faults.slice(0, 20).map((item, index) => <div key={`${item.sequence}-${index}`}><b>{item.fault?.failure_mode || item.fault?.id || 'Finding not provided'}</b><span>{item.mission_id || 'Mission not provided'} · {formatTime(item.timestamp)}</span></div>)}</div> : <div className="historical-empty">WARNING HISTORY NOT AVAILABLE</div>}</section><section className="historical-panel"><header><span className="v-eyebrow">PREDICTIVE INTELLIGENCE</span><b>{trend.status}</b></header><div className="historical-empty">TREND ANALYSIS NOT AVAILABLE<div>{trend.reason}</div></div></section></div></>}
   </section>
 }

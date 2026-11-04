@@ -34,7 +34,7 @@ const scenarios = [
     description: 'All 7 engine telemetry channels operate strictly within nominal design envelopes. Zero residual accumulation.',
     icon: ShieldCheck,
     tone: 'green',
-    channels: ['RPM: 5200', 'EGT: 607°C', 'Vib: 1.7 mm/s'],
+    channels: ['RPM', 'EGT', 'CHT', 'Fuel flow'],
   },
   {
     id: 'engine_degradation',
@@ -45,7 +45,7 @@ const scenarios = [
     description: 'Progressive bearing wear generates mechanical friction, escalating vibration, elevated fuel burn, and thermal rise.',
     icon: Activity,
     tone: 'amber',
-    channels: ['Vibration ↑ +7.0 mm/s', 'Fuel Flow ↑ +18%', 'EGT ↑ +72°C', 'Oil T ↑ +18°C'],
+    channels: ['Vibration', 'Fuel flow', 'EGT', 'Oil temperature'],
   },
   {
     id: 'compressor_fouling',
@@ -56,7 +56,7 @@ const scenarios = [
     description: 'Aerodynamic blading fouling reduces stage pressure ratio and efficiency, demanding higher fuel burn at fixed thrust.',
     icon: Flame,
     tone: 'amber',
-    channels: ['Fuel Flow ↑ +24%', 'EGT ↑ +55°C', 'Pressure Ratio ↓ -1.75'],
+    channels: ['Fuel flow', 'EGT', 'Pressure ratio'],
   },
   {
     id: 'fuel_leak',
@@ -67,7 +67,7 @@ const scenarios = [
     description: 'Delivery pressure decay induces acute fuel flow loss, lean combustion overheating, and impending engine starvation.',
     icon: Droplets,
     tone: 'red',
-    channels: ['Fuel Flow ↓ -38%', 'Oil Press ↓ -0.55 bar', 'EGT ↑ +45°C'],
+    channels: ['Fuel flow', 'Oil pressure', 'EGT'],
   },
   {
     id: 'sensor_bias',
@@ -78,7 +78,7 @@ const scenarios = [
     description: 'Thermocouple & transducer calibration drift generates phantom residuals while actual engine core operates nominally.',
     icon: Sliders,
     tone: 'purple',
-    channels: ['EGT Res ↑ +62°C', 'Oil P Res ↓ -0.75 bar', 'Physical: Nominal'],
+    channels: ['EGT', 'Oil pressure', 'Sensor residuals'],
   },
 ]
 
@@ -138,32 +138,46 @@ const confidenceLabel = value => (value >= 85 ? 'High' : value >= 70 ? 'Medium' 
 export default function JudgeDemo({ data, busy, onStart, onPause, onRestart }) {
   const [selectedNarrativeStep, setSelectedNarrativeStep] = useState(null)
 
-  const progress = data?.fault_progress || {
-    scenario: 'nominal',
-    elapsed_seconds: 0,
-    severity_percent: 0,
-    detected: false,
-    anomaly_detected: false,
-    root_cause_identified: false,
-    maintenance_ready: false,
-  }
+  const progress = data?.fault_progress
+  const progressAvailable = Number.isFinite(progress?.elapsed_seconds)
+    && Number.isFinite(progress?.severity_percent)
 
-  const activeScenario = data?.controls?.scenario || 'nominal'
+  const activeScenario = scenarios.some(scenario => scenario.id === data?.controls?.scenario)
+    ? data.controls.scenario
+    : null
   const isRunning = Boolean(data?.controls?.running)
   const finding = data?.maintenance?.find(item => item.priority !== 'routine') || data?.maintenance?.[0]
-  const currentScenarioMeta = scenarios.find(s => s.id === activeScenario) || scenarios[0]
+  const currentScenarioMeta = scenarios.find(s => s.id === activeScenario) || {
+    label: 'Scenario unavailable',
+    category: 'NOT PROVIDED',
+  }
+  const healthScore = Number.isFinite(data?.health_index) ? data.health_index : null
+  const rulHours = Number.isFinite(data?.rul?.hours) ? data.rul.hours : null
+  const confidence = Number.isFinite(data?.explainability?.confidence_percent)
+    ? data.explainability.confidence_percent
+    : null
 
   // Calculate current active stage (1 to 6)
-  let currentStageIndex = 1
-  for (let i = stageDefinitions.length - 1; i >= 0; i--) {
-    if (stageDefinitions[i].condition(progress, data)) {
-      currentStageIndex = i + 1
-      break
+  let currentStageIndex = null
+  if (progressAvailable) {
+    currentStageIndex = 1
+    for (let i = stageDefinitions.length - 1; i >= 0; i--) {
+      if (stageDefinitions[i].condition(progress, data)) {
+        currentStageIndex = i + 1
+        break
+      }
     }
   }
 
   // Find top residual feature for display
   const topFeature = data?.explainability?.features?.[0]
+  const residualFeatures = Array.isArray(data?.explainability?.features)
+    ? data.explainability.features.filter(feature =>
+      typeof feature?.label === 'string'
+      && Number.isFinite(feature.residual)
+      && typeof feature.unit === 'string')
+    : []
+  const maxResidual = Math.max(0, ...residualFeatures.map(feature => Math.abs(feature.residual)))
 
   // Narrative steps
   const narrativeSteps = [
@@ -173,7 +187,7 @@ export default function JudgeDemo({ data, busy, onStart, onPause, onRestart }) {
       badge: 'INGESTION',
       icon: Radio,
       desc: 'Raw 7-channel multi-sensor acquisition (RPM, EGT, CHT, Fuel, Vib, Oil P, Oil T) sampled at 1 Hz.',
-      liveValue: `${data?.quality?.samples || 0} frames · 1 Hz deterministic`,
+      liveValue: Number.isFinite(data?.quality?.samples) ? `${data.quality.samples} frames` : 'Sample count unavailable',
       formula: 'y_meas = [RPM, EGT, CHT, ...]^T',
     },
     {
@@ -182,7 +196,7 @@ export default function JudgeDemo({ data, busy, onStart, onPause, onRestart }) {
       badge: 'DIGITAL TWIN',
       icon: Cpu,
       desc: 'First-principles physics twin computes expected thermodynamic states; delta residuals isolated.',
-      liveValue: topFeature ? `Max: ${topFeature.label} (Δ ${topFeature.residual > 0 ? '+' : ''}${topFeature.residual} ${topFeature.unit})` : 'All Residuals Nominal',
+      liveValue: topFeature ? `Max: ${topFeature.label} (Δ ${topFeature.residual > 0 ? '+' : ''}${topFeature.residual} ${topFeature.unit})` : 'Residual summary unavailable',
       formula: 'ε_i = y_{meas,i} - y_{twin,i}',
     },
     {
@@ -191,7 +205,7 @@ export default function JudgeDemo({ data, busy, onStart, onPause, onRestart }) {
       badge: 'CLASSIFICATION',
       icon: ShieldCheck,
       desc: 'Deterministic fault signature matching evaluates multi-channel patterns against aerospace failure modes.',
-      liveValue: finding?.failure_mode || 'Nominal Condition',
+      liveValue: finding?.failure_mode || 'Classification unavailable',
       formula: 'M* = argmax P(Mode | {ε_i})',
     },
     {
@@ -200,7 +214,7 @@ export default function JudgeDemo({ data, busy, onStart, onPause, onRestart }) {
       badge: 'PROGNOSTICS',
       icon: Gauge,
       desc: 'Multi-penalty health index integrates sensor penalties and cumulative thermodynamic wear.',
-      liveValue: `${data?.health_index?.toFixed(1) || 100}% Health Score`,
+      liveValue: healthScore === null ? 'Health score unavailable' : `${healthScore.toFixed(1)}% Health Score`,
       formula: 'H = 100 - (∑ w_i P_i + W_wear)',
     },
     {
@@ -209,7 +223,7 @@ export default function JudgeDemo({ data, busy, onStart, onPause, onRestart }) {
       badge: 'PROJECTION',
       icon: Clock3,
       desc: 'Instantaneous damage rate extrapolates remaining wear budget to forecast flight hours to boundary.',
-      liveValue: `${data?.rul?.hours?.toFixed(1) || 800} hrs Remaining`,
+      liveValue: rulHours === null ? 'Remaining-life estimate unavailable' : `${rulHours.toFixed(1)} hrs Remaining`,
       formula: 'RUL = (1 - Wear) / ẇ(t)',
     },
     {
@@ -218,7 +232,7 @@ export default function JudgeDemo({ data, busy, onStart, onPause, onRestart }) {
       badge: 'DECISION',
       icon: Wrench,
       desc: 'Prescriptive decision engine produces actionable work orders, borescope directives, and dispatch status.',
-      liveValue: data?.mission?.decision || 'WITHIN DEMO ENVELOPE',
+      liveValue: data?.mission?.decision || 'Decision unavailable',
       formula: 'Action = f(Mode, Priority, Risk)',
     },
   ]
@@ -226,7 +240,7 @@ export default function JudgeDemo({ data, busy, onStart, onPause, onRestart }) {
   const handleRestart = () => {
     if (onRestart) {
       onRestart()
-    } else if (onStart) {
+    } else if (onStart && activeScenario) {
       onStart(activeScenario)
     }
   }
@@ -238,19 +252,19 @@ export default function JudgeDemo({ data, busy, onStart, onPause, onRestart }) {
         <div>
           <div className="judge-demo-eyebrows">
             <span className="v-eyebrow">
-              <Sparkles size={12} className="v-sparkle-icon" /> SKYNEX · AEROSPACE ENGINE INTELLIGENCE
+              <Sparkles size={12} className="v-sparkle-icon" /> SKYNEX · SYNTHETIC SCENARIO WALKTHROUGH
             </span>
-            <span className="judge-mode-tag">60-SECOND DETERMINISTIC WALKTHROUGH</span>
+            <span className="judge-mode-tag">DETERMINISTIC DEMONSTRATOR</span>
           </div>
           <h2>Judge Demo Mode</h2>
           <p>
-            One-click deterministic fault injection on the VAYU-01 digital twin. Observe real-time physics residual growth,
-            fault classification, health degradation, RUL countdown, and actionable maintenance prescriptions.
+            Explore five predefined synthetic scenarios and review the twin service outputs. Demonstration results are
+            illustrative and are not aircraft telemetry, operating limits, or flight-clearance decisions.
           </p>
         </div>
         <div className="judge-head-badges">
           <span className="v-badge purple">
-            <Radio size={11} /> LIVE TWIN
+            <Radio size={11} /> TWIN SERVICE
           </span>
           <span className={`v-badge ${isRunning ? 'green' : 'amber'}`}>
             <span className={`judge-pulse-dot ${isRunning ? 'pulse' : ''}`} />
@@ -263,7 +277,7 @@ export default function JudgeDemo({ data, busy, onStart, onPause, onRestart }) {
       <div className="judge-scenarios-section">
         <div className="judge-section-bar">
           <span className="judge-subheading">1. SCENARIO SELECTOR — ONE-CLICK DETERMINISTIC FAULT MODELS</span>
-          <span className="judge-subhint">Clicking any scenario resets twin to t=0 and executes deterministic physics evolution</span>
+          <span className="judge-subhint">Selecting a scenario requests a reset from the existing twin service.</span>
         </div>
 
         <div className="judge-scenario-cards" role="radiogroup" aria-label="Fault scenario selector">
@@ -303,7 +317,7 @@ export default function JudgeDemo({ data, busy, onStart, onPause, onRestart }) {
                     ))}
                   </div>
                   <div className="judge-card-action">
-                    <span>{isSelected ? 'RUNNING MODEL' : 'INITIALIZE'}</span>
+                    <span>{isSelected ? (isRunning ? 'ACTIVE SCENARIO' : 'SELECTED SCENARIO') : 'SELECT SCENARIO'}</span>
                     <ArrowRight size={12} />
                   </div>
                 </div>
@@ -318,7 +332,7 @@ export default function JudgeDemo({ data, busy, onStart, onPause, onRestart }) {
         <div className="judge-control-buttons">
           <button
             className={`v-button ${isRunning ? '' : 'primary'} judge-btn-play`}
-            disabled={busy}
+            disabled={busy || !activeScenario}
             onClick={() => onPause(!isRunning)}
             aria-label={isRunning ? 'Pause simulation' : 'Play simulation'}
           >
@@ -328,7 +342,7 @@ export default function JudgeDemo({ data, busy, onStart, onPause, onRestart }) {
 
           <button
             className="v-button judge-btn-restart"
-            disabled={busy}
+            disabled={busy || !activeScenario}
             onClick={handleRestart}
             aria-label="Restart scenario from healthy baseline"
           >
@@ -341,13 +355,13 @@ export default function JudgeDemo({ data, busy, onStart, onPause, onRestart }) {
           <div className="judge-control-metric">
             <span className="judge-ctrl-label">EXPOSURE CLOCK</span>
             <span className="judge-ctrl-value mono">
-              <Clock3 size={13} /> T+{progress.elapsed_seconds.toFixed(1)}s
+            <Clock3 size={13} /> {progressAvailable ? `T+${progress.elapsed_seconds.toFixed(1)}s` : 'Unavailable'}
             </span>
           </div>
 
           <div className="judge-control-metric">
-            <span className="judge-ctrl-label">DETERMINISTIC RATE</span>
-            <span className="judge-ctrl-value">1.0 Hz Physical ODE</span>
+            <span className="judge-ctrl-label">REPORTED UPDATE RATE</span>
+            <span className="judge-ctrl-value">Not provided</span>
           </div>
 
           <div className="judge-control-metric">
@@ -357,7 +371,7 @@ export default function JudgeDemo({ data, busy, onStart, onPause, onRestart }) {
 
           <div className="judge-control-metric">
             <span className="judge-ctrl-label">CURRENT STAGE</span>
-            <span className="judge-ctrl-value stage-badge">Stage {currentStageIndex} of 6</span>
+            <span className="judge-ctrl-value stage-badge">{currentStageIndex === null ? 'Unavailable' : `Stage ${currentStageIndex} of 6`}</span>
           </div>
         </div>
       </div>
@@ -367,7 +381,7 @@ export default function JudgeDemo({ data, busy, onStart, onPause, onRestart }) {
         <div className="judge-section-bar">
           <span className="judge-subheading">2. AUTOMATIC FAULT EVOLUTION — 6 DETERMINISTIC PHASES</span>
           <span className="judge-subhint">
-            Severity: {progress.severity_percent.toFixed(1)}% · Monotonic mathematical ramp S(t) = 1 - e^(-t / 45s)
+            Demonstrator severity: {Number.isFinite(progress?.severity_percent) ? `${progress.severity_percent.toFixed(1)}%` : 'Unavailable'}
           </span>
         </div>
 
@@ -377,14 +391,14 @@ export default function JudgeDemo({ data, busy, onStart, onPause, onRestart }) {
             <div
               className="judge-timeline-fill"
               style={{
-                width: `${Math.min(100, Math.max(5, (currentStageIndex / 6) * 100))}%`,
+                width: `${currentStageIndex === null ? 0 : Math.min(100, Math.max(5, (currentStageIndex / 6) * 100))}%`,
               }}
             />
           </div>
 
           <div className="judge-stages-grid">
             {stageDefinitions.map((stageDef, index) => {
-              const isPassed = stageDef.condition(progress, data)
+              const isPassed = progressAvailable && stageDef.condition(progress, data)
               const isCurrent = currentStageIndex === stageDef.stage
               const stageNum = index + 1
 
@@ -409,7 +423,7 @@ export default function JudgeDemo({ data, busy, onStart, onPause, onRestart }) {
                       )}
                     </div>
                     <span className="judge-stage-tag">
-                      {isCurrent ? 'ACTIVE' : stageClass === 'completed' ? 'DONE' : 'PENDING'}
+                      {!progressAvailable ? 'UNAVAILABLE' : isCurrent ? 'ACTIVE' : stageClass === 'completed' ? 'DONE' : 'PENDING'}
                     </span>
                   </div>
 
@@ -440,31 +454,27 @@ export default function JudgeDemo({ data, busy, onStart, onPause, onRestart }) {
               <strong className="judge-metric-value">{currentScenarioMeta.label}</strong>
               <div className="judge-metric-tags">
                 <span className="judge-metric-pill">{currentScenarioMeta.category}</span>
-                <span className={`judge-metric-pill priority ${(finding?.priority || 'routine').toLowerCase()}`}>
-                  {(finding?.priority || 'ROUTINE').toUpperCase()}
+                <span className={`judge-metric-pill priority ${(finding?.priority || 'unknown').toLowerCase()}`}>
+                  {finding?.priority?.toUpperCase() || 'NOT PROVIDED'}
                 </span>
               </div>
             </div>
-            <span className="judge-metric-footnote">Classification: {finding?.failure_mode || 'Nominal Condition'}</span>
+            <span className="judge-metric-footnote">Classification: {finding?.failure_mode || 'Not provided'}</span>
           </div>
 
           {/* 2. HEALTH SCORE */}
-          <div className={`judge-metric-box ${data?.health_index < 60 ? 'red' : data?.health_index <= 85 ? 'amber' : 'green'}`}>
+          <div className={`judge-metric-box ${healthScore === null ? '' : healthScore < 60 ? 'red' : healthScore <= 85 ? 'amber' : 'green'}`}>
             <span className="judge-metric-title">HEALTH SCORE</span>
             <div className="judge-metric-body">
               <strong className="judge-metric-value health-val">
-                {data?.health_index?.toFixed(1) ?? '100.0'}
-                <small>/ 100</small>
+                {healthScore === null ? 'Unavailable' : <>{healthScore.toFixed(1)}<small>/ 100</small></>}
               </strong>
-              <div className="judge-health-mini-track">
-                <div
-                  className="judge-health-mini-fill"
-                  style={{ width: `${Math.max(0, Math.min(100, data?.health_index ?? 100))}%` }}
-                />
-              </div>
+              {healthScore !== null && <div className="judge-health-mini-track">
+                <div className="judge-health-mini-fill" style={{ width: `${Math.max(0, Math.min(100, healthScore))}%` }} />
+              </div>}
             </div>
             <span className="judge-metric-footnote">
-              {data?.health_index >= 85 ? 'Nominal Flight Clearance' : data?.health_index >= 60 ? 'Monitor Condition Degradation' : 'Critical Maintenance Threshold'}
+              {healthScore === null ? 'Health assessment unavailable' : 'Synthetic demonstrator model output · not flight clearance'}
             </span>
           </div>
 
@@ -473,15 +483,16 @@ export default function JudgeDemo({ data, busy, onStart, onPause, onRestart }) {
             <span className="judge-metric-title">RUL REMAINING</span>
             <div className="judge-metric-body">
               <strong className="judge-metric-value rul-val">
-                {data?.rul?.hours?.toFixed(1) ?? '800.0'}
-                <small>hrs</small>
+                {rulHours === null ? 'Unavailable' : <>{rulHours.toFixed(1)}<small>hrs</small></>}
               </strong>
-              <span className="judge-rul-delta">
-                <TrendingDown size={12} /> Rate: {data?.rul?.delta_hours ? `${data.rul.delta_hours.toFixed(2)} h/min` : '-0.02 h/min'}
-              </span>
+              {Number.isFinite(data?.rul?.delta_hours) && <span className="judge-rul-delta">
+                <TrendingDown size={12} /> Rate: {data.rul.delta_hours.toFixed(2)} h/min
+              </span>}
             </div>
             <span className="judge-metric-footnote">
-              Sensitivity Band: {data?.rul?.lower_hours?.toFixed(0) || '0'}h – {data?.rul?.upper_hours?.toFixed(0) || '0'}h (±35%)
+              {Number.isFinite(data?.rul?.lower_hours) && Number.isFinite(data?.rul?.upper_hours)
+                ? `Model sensitivity range: ${data.rul.lower_hours.toFixed(0)}–${data.rul.upper_hours.toFixed(0)} hrs`
+                : 'Model sensitivity range unavailable'}
             </span>
           </div>
 
@@ -490,14 +501,13 @@ export default function JudgeDemo({ data, busy, onStart, onPause, onRestart }) {
             <span className="judge-metric-title">CONFIDENCE</span>
             <div className="judge-metric-body">
               <strong className="judge-metric-value conf-val">
-                {data?.explainability?.confidence_percent?.toFixed(0) ?? '95'}
-                <small>%</small>
+                {confidence === null ? 'Unavailable' : <>{confidence.toFixed(0)}<small>%</small></>}
               </strong>
-              <span className="judge-conf-badge">
-                {confidenceLabel(data?.explainability?.confidence_percent ?? 95)} Confidence
-              </span>
+              {confidence !== null && <span className="judge-conf-badge">{confidenceLabel(confidence)} · model-reported</span>}
             </div>
-            <span className="judge-metric-footnote">Sample support: {data?.quality?.samples || 0} frames</span>
+            <span className="judge-metric-footnote">
+              {Number.isFinite(data?.quality?.samples) ? `Sample support: ${data.quality.samples} frames` : 'Sample count unavailable'}
+            </span>
           </div>
 
           {/* 5. SEVERITY */}
@@ -505,18 +515,19 @@ export default function JudgeDemo({ data, busy, onStart, onPause, onRestart }) {
             <span className="judge-metric-title">SEVERITY</span>
             <div className="judge-metric-body">
               <strong className="judge-metric-value sev-val">
-                {progress.severity_percent.toFixed(1)}
-                <small>%</small>
+                {Number.isFinite(progress?.severity_percent) ? <>{progress.severity_percent.toFixed(1)}<small>%</small></> : 'Unavailable'}
               </strong>
-              <div className="judge-sev-mini-bar">
+              {Number.isFinite(progress?.severity_percent) && <div className="judge-sev-mini-bar">
                 <div
                   className="judge-sev-mini-fill"
                   style={{ width: `${Math.min(100, progress.severity_percent)}%` }}
                 />
-              </div>
+              </div>}
             </div>
             <span className="judge-metric-footnote">
-              {progress.severity_percent === 0 ? 'Zero Fault Severity' : progress.severity_percent < 30 ? 'Incipient Stage' : progress.severity_percent < 60 ? 'Moderate Anomaly' : 'Severe Fault Exposure'}
+              {Number.isFinite(progress?.severity_percent)
+                ? progress.severity_percent === 0 ? 'No accumulated severity reported' : 'Synthetic demonstrator severity'
+                : 'Severity unavailable'}
             </span>
           </div>
 
@@ -529,12 +540,12 @@ export default function JudgeDemo({ data, busy, onStart, onPause, onRestart }) {
               </div>
               <div className="judge-action-text">
                 <p className="judge-action-directive">
-                  {finding?.recommended_action || 'Continue scheduled maintenance inspection.'}
+                  {finding?.recommended_action || 'Recommendation unavailable'}
                 </p>
                 <div className="judge-action-meta">
-                  <span>Estimated Downtime: <b>{finding?.estimated_hours || 0.5} hours</b></span>
-                  <span>Affected Channels: <b>{finding?.features?.join(', ') || 'Nominal'}</b></span>
-                  <span>Mission Decision: <b className="highlight">{data?.mission?.decision || 'CLEAR FOR FLIGHT'}</b></span>
+                  <span>Estimated Downtime: <b>{Number.isFinite(finding?.estimated_hours) ? `${finding.estimated_hours} hours` : 'Not provided'}</b></span>
+                  <span>Affected Channels: <b>{finding?.features?.length ? finding.features.join(', ') : 'Not provided'}</b></span>
+                  <span>Mission Decision: <b className="highlight">{data?.mission?.decision || 'Unavailable'}</b></span>
                 </div>
               </div>
             </div>
@@ -542,18 +553,60 @@ export default function JudgeDemo({ data, busy, onStart, onPause, onRestart }) {
         </div>
       </div>
 
+      <section className="judge-residual-section" aria-labelledby="judge-residual-title">
+        <div className="judge-section-bar">
+          <div>
+            <span className="judge-subheading" id="judge-residual-title">TWIN-SERVICE RESIDUAL EVIDENCE</span>
+            <span className="judge-subhint">Reported values only · bar lengths are relative to the largest displayed residual</span>
+          </div>
+          <span className="judge-subhint">{residualFeatures.length ? `${residualFeatures.length} reported channels` : 'Unavailable'}</span>
+        </div>
+        {residualFeatures.length ? (
+          <>
+            <div className="judge-residual-legend"><span>− NEGATIVE</span><span>0</span><span>POSITIVE +</span></div>
+            <div className="judge-residual-list">
+            {residualFeatures.map((feature, index) => {
+              const width = maxResidual === 0 ? 0 : Math.abs(feature.residual) / maxResidual * 50
+              return (
+                <div className="judge-residual-row" key={`${feature.label}-${index}`}>
+                  <span className="judge-residual-label">{feature.label}</span>
+                  <div className="judge-residual-track" aria-hidden="true">
+                    <i className="judge-residual-zero" />
+                    <i
+                      className={`judge-residual-bar ${feature.residual < 0 ? 'negative' : 'positive'}`}
+                      style={{
+                        width: `${width}%`,
+                        left: feature.residual < 0 ? `${50 - width}%` : '50%',
+                      }}
+                    />
+                  </div>
+                  <strong className="judge-residual-value">
+                    {feature.residual > 0 ? '+' : ''}{feature.residual} <small>{feature.unit}</small>
+                  </strong>
+                </div>
+              )
+            })}
+            </div>
+          </>
+        ) : (
+          <p className="judge-residual-empty">Residual evidence is unavailable in the current twin-service response.</p>
+        )}
+      </section>
+
       {/* 4.5 AUTONOMOUS MISSION DECISION ENGINE */}
       <div className="judge-decision-section">
         <div className="judge-section-bar">
           <span className="judge-subheading">4.5 AUTONOMOUS MISSION DECISION ENGINE</span>
           <span className="judge-subhint">Operational decision support for UAV mission commanders</span>
         </div>
-        <MissionDecisionCard
-          health={data?.health_index || 100}
-          rul={data?.rul?.hours || 800}
-          fault={currentScenarioMeta.label}
-          faultClassification={finding?.failure_mode || 'HEALTHY'}
-        />
+        {healthScore !== null && rulHours !== null
+          ? <MissionDecisionCard
+            health={healthScore}
+            rul={rulHours}
+            fault={currentScenarioMeta.label}
+            faultClassification={finding?.failure_mode || 'NOT PROVIDED'}
+          />
+          : <p className="v-model-note">Decision summary unavailable until the twin service provides both health and remaining-life estimates.</p>}
       </div>
 
       {/* 5. DEMONSTRATION NARRATIVE: Telemetry → Residuals → Diagnosis → Health → RUL → Recommendation */}

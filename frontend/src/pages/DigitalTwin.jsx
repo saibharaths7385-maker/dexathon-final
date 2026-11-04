@@ -30,24 +30,27 @@ function ResidualMeter({ residual, expected, tolerance }) {
 }
 
 function TwinChannel({ channel, telemetry }) {
-  const actual = telemetry.at(-1)?.[channel.field] ?? 0
-  const residual = actual - channel.expected
-  const outsideExpectedBand = Math.abs(residual) > channel.tolerance
+  const actual = telemetry.at(-1)?.[channel.field]
+  const actualAvailable = Number.isFinite(actual)
+  const residual = actualAvailable ? actual - channel.expected : null
+  const outsideExpectedBand = actualAvailable && Math.abs(residual) > channel.tolerance
 
   return (
     <section className="twin-card">
       <header className="twin-heading">
         <div><span className="eyebrow">EXPECTED VS ACTUAL</span><h3>{channel.label}</h3></div>
-        <span className={`residual-status ${outsideExpectedBand ? 'watch' : 'nominal'}`}>
-          {outsideExpectedBand ? 'REVIEW' : 'WITHIN BAND'}
+        <span className={`residual-status ${actualAvailable ? outsideExpectedBand ? 'watch' : 'nominal' : 'unavailable'}`}>
+          {!actualAvailable ? 'NOT ASSESSED' : outsideExpectedBand ? 'REVIEW' : 'WITHIN BAND'}
         </span>
       </header>
       <div className="twin-values">
         <span>EXPECTED <b>{channel.expected} <small>{channel.unit}</small></b></span>
-        <span>ACTUAL <b>{Number(actual).toFixed(1)} <small>{channel.unit}</small></b></span>
+        <span>ACTUAL <b>{actualAvailable ? <>{actual.toFixed(1)} <small>{channel.unit}</small></> : 'Unavailable'}</b></span>
       </div>
       <TwinChart data={telemetry} field={channel.field} expected={channel.expected} />
-      <ResidualMeter residual={residual} expected={channel.expected} tolerance={channel.tolerance} />
+      {actualAvailable
+        ? <ResidualMeter residual={residual} expected={channel.expected} tolerance={channel.tolerance} />
+        : <p className="twin-unavailable">Residual unavailable because the current sample has no {channel.label.toLowerCase()} value.</p>}
     </section>
   )
 }
@@ -59,9 +62,9 @@ export default function DigitalTwin() {
     <>
       <section className="page-title">
         <div>
-          <span className="eyebrow">PREDICTIVE ENGINE MODEL · UAV-01 · SIMULATION</span>
+          <span className="eyebrow">LOCAL SYNTHETIC DEMONSTRATOR · UAV-01</span>
           <h2>Digital twin</h2>
-          <p>Compare the mock sensor stream with nominal references and inspect residuals.</p>
+          <p>Compare generated browser-session samples with illustrative nominal references. No aircraft telemetry is connected.</p>
         </div>
         <div className="mission-state" role="status"><i /> MODEL DEMONSTRATION</div>
       </section>
@@ -99,18 +102,19 @@ export default function DigitalTwin() {
             </thead>
             <tbody>
               {channels.map((channel) => {
-                const actual = Number(mission.latest[channel.field])
-                const residual = actual - channel.expected
-                const warning = Math.abs(residual) > channel.tolerance
+                const actual = mission.latest?.[channel.field]
+                const actualAvailable = Number.isFinite(actual)
+                const residual = actualAvailable ? actual - channel.expected : null
+                const warning = actualAvailable && Math.abs(residual) > channel.tolerance
                 return (
                   <tr key={channel.field}>
                     <td>{channel.label}</td>
-                    <td>{actual.toFixed(channel.field === 'fuel_flow' || channel.field === 'vibration' ? 2 : 1)} {channel.unit}</td>
+                    <td>{actualAvailable ? `${actual.toFixed(channel.field === 'fuel_flow' || channel.field === 'vibration' ? 2 : 1)} ${channel.unit}` : 'Unavailable'}</td>
                     <td>{channel.expected} {channel.unit}</td>
-                    <td className={warning ? 'residual-warning' : 'residual-normal'}>
-                      {residual > 0 ? '+' : ''}{residual.toFixed(2)} {channel.unit}
+                    <td className={actualAvailable ? warning ? 'residual-warning' : 'residual-normal' : ''}>
+                      {actualAvailable ? `${residual > 0 ? '+' : ''}${residual.toFixed(2)} ${channel.unit}` : 'Unavailable'}
                     </td>
-                    <td><span className={`residual-status ${warning ? 'watch' : 'nominal'}`}>{warning ? 'OUT OF BAND' : 'NOMINAL'}</span></td>
+                    <td><span className={`residual-status ${actualAvailable ? warning ? 'watch' : 'nominal' : 'unavailable'}`}>{!actualAvailable ? 'NOT ASSESSED' : warning ? 'OUT OF BAND' : 'NOMINAL'}</span></td>
                   </tr>
                 )
               })}
@@ -118,7 +122,7 @@ export default function DigitalTwin() {
           </table>
         </div>
       </section>
-      <p className="twin-disclaimer">Nominal references and remaining-life estimates are illustrative demonstrator values, not calibrated aircraft limits.</p>
+      <p className="twin-disclaimer">Health and remaining-life indicators are local synthetic estimates; nominal references are illustrative and are not calibrated aircraft limits. Do not use for operational decisions.</p>
     </>
   )
 }

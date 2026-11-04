@@ -89,6 +89,8 @@ function mockTwinStream(page) {
   }
   page.route('**/api/v2/twin', (route) => route.fulfill({ json: snapshot }))
   page.route('**/api/v2/history*', (route) => route.fulfill({ json: { history: [] } }))
+  page.route('**/api/v2/fault-history*', (route) => route.fulfill({ json: { fault_history: [] } }))
+  page.route('**/api/v2/missions*', (route) => route.fulfill({ json: { missions: [] } }))
   page.route('**/api/v2/telemetry/source', (route) => route.fulfill({
     json: { mode: 'LIVE_LAPTOP1', status: 'disconnected', latest_frame: null, last_received_at: null, last_error: null },
   }))
@@ -120,6 +122,92 @@ function mockTwinStream(page) {
   }
 }
 
+test('dashboard keeps provenance, chart units and actions readable across viewport sizes', async ({ page }, testInfo) => {
+  await mockMissionApi(page)
+  mockTwinStream(page)
+  await page.goto('/')
+  for (const width of [1440, 1024, 768, 390, 320]) {
+    await page.setViewportSize({ width, height: 900 })
+    await expect(page.getByRole('heading', { name: 'Mission overview' })).toBeVisible()
+    await expect(page.getByText('LOCAL FAULT INJECTION · SYNTHETIC', { exact: true })).toBeVisible()
+    await expect(page.getByText('TWIN API · LIVE STREAM', { exact: true })).toBeVisible()
+    await expect(page.getByText('MISSION-ALPHA')).toBeVisible()
+    await expect(page.getByRole('link', { name: 'Launch Judge Demo' })).toBeVisible()
+    await expect(page.getByRole('link', { name: 'View Architecture' })).toBeVisible()
+    if (width <= 1024) {
+      const menu = page.locator('.topbar .menu')
+      await menu.click()
+      await expect(menu).toHaveAttribute('aria-expanded', 'true')
+      await expect(page.locator('.brand button')).toBeVisible()
+      await page.keyboard.press('Escape')
+      await expect(menu).toHaveAttribute('aria-expanded', 'false')
+      await expect(menu).toBeFocused()
+    }
+    await expect(page.locator('.live-readout')).toHaveCount(6)
+    await expect(page.locator('.live-readout .readout-status')).toHaveText([
+      'SIMULATION SAMPLE',
+      'SIMULATION SAMPLE',
+      'SIMULATION SAMPLE',
+      'SIMULATION SAMPLE',
+      'NOT PROVIDED',
+      'NOT PROVIDED',
+    ])
+    expect(await page.evaluate(() => document.documentElement.scrollWidth), `Overflow at ${width}px`).toBeLessThanOrEqual(width)
+    await page.screenshot({ path: testInfo.outputPath(`dashboard-${width}.png`), fullPage: true })
+  }
+  await expect(page.locator('.dashboard-chart-grid .chart-card header b')).toHaveText([
+    /rpm$/, /°C$/, /°C$/, /L\/h$/,
+  ])
+  await expect(page.getByText('This demonstrator recommendation is not an AI service response or flight authorization.')).toBeVisible()
+})
+
+test('scenario centre preserves selection and shows unavailable twin outputs without fabricated progress', async ({ page }) => {
+  const snapshot = {
+    engine_id: 'VAYU-01',
+    sequence: 12,
+    timestamp: new Date().toISOString(),
+    source: 'simulation',
+    sensors: {},
+    expected: {},
+    rul: { hours: 420 },
+    mission: { reliability_percent: 98, decision: 'WITHIN DEMO ENVELOPE' },
+    controls: { scenario: 'nominal', running: false },
+    quality: { status: 'unavailable' },
+    maintenance: [],
+    disclaimer: 'Synthetic research demonstrator. Not flight clearance.',
+  }
+  await page.route('**/api/v2/twin', (route) => route.fulfill({ json: snapshot }))
+  await page.route('**/api/v2/history*', (route) => route.fulfill({ json: { history: [] } }))
+  await page.routeWebSocket('**/api/v2/stream', (socket) => {
+    socket.send(JSON.stringify(snapshot))
+  })
+  let resetPayload
+  await page.route('**/api/v2/demo/reset', async (route) => {
+    resetPayload = route.request().postDataJSON()
+    await route.fulfill({
+      json: {
+        ...snapshot,
+        sequence: 13,
+        timestamp: new Date().toISOString(),
+        controls: { ...snapshot.controls, scenario: resetPayload.scenario },
+      },
+    })
+  })
+
+  await page.goto('/judge-demo')
+  const fuelLeakScenario = page.getByRole('radio', { name: /Fuel Leak/ })
+  await expect(fuelLeakScenario).toHaveAttribute('aria-checked', 'false')
+  await expect(page.locator('.stage-badge')).toHaveText('Unavailable')
+  await expect(page.locator('.sev-val')).toHaveText('Unavailable')
+
+  await fuelLeakScenario.click()
+  await expect(fuelLeakScenario).toHaveAttribute('aria-checked', 'true')
+  expect(resetPayload).toEqual({ scenario: 'fuel_leak' })
+  await expect(page.locator('.stage-badge')).toHaveText('Unavailable')
+  await expect(page.locator('.sev-val')).toHaveText('Unavailable')
+  await expect(page.getByText('Residual evidence is unavailable in the current twin-service response.')).toBeVisible()
+})
+
 test('mission operations pages render and link through the current command layout', async ({ page }) => {
   await mockMissionApi(page)
   await page.goto('/')
@@ -132,6 +220,9 @@ test('mission operations pages render and link through the current command layou
 
   await page.getByRole('link', { name: 'Telemetry', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Live Telemetry' })).toBeVisible()
+  await expect(page.getByText('LOCAL SYNTHETIC DEMONSTRATOR', { exact: false })).toBeVisible()
+  await expect(page.getByText('SYNTHETIC SAMPLE', { exact: true }).first()).toBeVisible()
+  await expect(page.locator('.telemetry-readout')).toHaveCount(6)
   await expect(page.locator('.telemetry-grid .chart-card')).toHaveCount(6)
   const initialRpm = await page.locator('.telemetry-grid .chart-card header b').first().textContent()
   await expect.poll(
@@ -140,11 +231,10 @@ test('mission operations pages render and link through the current command layou
 
   await page.getByRole('link', { name: 'Fleet', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Fleet command center' })).toBeVisible()
-  await expect(page.locator('.fleet-asset-table button')).toHaveCount(3)
+  await expect(page.locator('.fleet-asset-table button')).toHaveCount(2)
   await expect(page.getByText(/last update/)).toBeVisible()
-  const maintenanceAsset = page.locator('.fleet-asset-table button').filter({ hasText: 'VAYU-03' })
-  await expect(maintenanceAsset).toContainText('67')
-  await expect(maintenanceAsset).toContainText('MAINTENANCE REQUIRED')
+  await expect(page.locator('.fleet-asset-table')).not.toContainText('VAYU-03')
+  await expect(page.locator('.fleet-kpis')).toContainText('91%')
   await page.getByRole('button', { name: /Select VAYU-02/ }).click()
   await expect(page.locator('.fleet-asset h3')).toContainText('VAYU-02')
   await expect(page.getByText('174 h RUL')).toBeVisible()
@@ -161,30 +251,65 @@ test('mission operations pages render and link through the current command layou
   await expect(page.locator('.replay-chart-grid .chart-wrap')).toHaveCount(4)
 
   await page.getByRole('link', { name: 'Diagnosis', exact: true }).click()
-  await expect(page.getByRole('heading', { name: 'Fault assessment' })).toBeVisible()
-  await expect(page.getByText('RECOMMENDED ACTION')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Engineering assessment' })).toBeVisible()
+  await expect(page.getByText('LOCAL SYNTHETIC RULES')).toBeVisible()
+  await expect(page.getByText('CONFIDENCE')).toBeVisible()
+  await expect(page.getByText('NOT PROVIDED')).toBeVisible()
+  await expect(page.getByText('LOCAL DEMONSTRATOR OUTPUT')).toBeVisible()
 
   await page.getByRole('link', { name: 'Analytics', exact: true }).click()
-  await expect(page.getByRole('heading', { name: 'Engine trends' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Historical analytics' })).toBeVisible()
+  await expect(page.getByLabel('History window')).toBeVisible()
+  await expect(page.getByText('GENERATED IN THIS BROWSER SESSION')).toBeVisible()
   await expect(page.locator('.fault-frequency-card')).toBeVisible()
+
+  await page.getByRole('link', { name: 'Health Analysis', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Expected vs estimated state' })).toBeVisible()
+  await expect(page.getByText(/supplied by the existing analysis API/)).toBeVisible()
 })
 
 test('mission navigation and fleet panels remain usable on a narrow viewport', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await mockMissionApi(page)
   await page.goto('/')
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
+  await expect(page.getByRole('heading', { name: 'Mission overview' })).toBeVisible()
+  const initialLayout = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    chartLayout: ['.dashboard-wrapper', '.dashboard-content', '.dashboard-live-charts', '.dashboard-chart-grid']
+      .map((selector) => {
+        const element = document.querySelector(selector)
+        const rect = element?.getBoundingClientRect()
+        return {
+          selector,
+          right: rect && Math.round(rect.right),
+          width: rect && Math.round(rect.width),
+          overflowX: element && getComputedStyle(element).overflowX,
+        }
+      }),
+    overflow: [...document.querySelectorAll('body *')]
+      .map((element) => ({ element, rect: element.getBoundingClientRect() }))
+      .filter(({ rect }) => rect.right > window.innerWidth + 1)
+      .slice(0, 8)
+      .map(({ element, rect }) => ({
+        tag: element.tagName,
+        className: typeof element.className === 'string' ? element.className : '',
+        right: Math.round(rect.right),
+        width: Math.round(rect.width),
+      })),
+  }))
+  expect(initialLayout.scrollWidth, JSON.stringify({ ...initialLayout, overflow: initialLayout.overflow.slice(0, 3) })).toBeLessThanOrEqual(390)
   await page.getByRole('button', { name: 'Open navigation' }).click()
   await page.getByRole('link', { name: 'Fleet', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Fleet command center' })).toBeVisible()
+  await expect(page.locator('.fleet-asset-table button')).toHaveCount(2)
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
 
   for (const [name, heading] of [
     ['Telemetry', 'Live Telemetry'],
     ['Digital Twin', 'Digital twin'],
     ['Replay', 'Flight playback'],
-    ['Diagnosis', 'Fault assessment'],
-    ['Analytics', 'Engine trends'],
+    ['Diagnosis', 'Engineering assessment'],
+    ['Analytics', 'Historical analytics'],
   ]) {
     await page.getByRole('button', { name: 'Open navigation' }).click()
     await page.getByRole('link', { name, exact: true }).click()
@@ -532,5 +657,5 @@ test('live fault injection updates health, mission decision, and diagnosis', asy
 
   await page.getByRole('link', { name: 'Diagnosis', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'ENGINE DEGRADATION' })).toBeVisible()
-  await expect(page.getByText(/RECOMMENDED ACTION · RETURN TO BASE/)).toBeVisible()
+  await expect(page.getByText(/LOCAL DEMONSTRATOR OUTPUT · RETURN TO BASE/)).toBeVisible()
 })

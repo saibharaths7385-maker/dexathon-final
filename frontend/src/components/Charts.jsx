@@ -28,7 +28,7 @@ export function TelemetryChart({ title, data, field, color = '#35b9ff', unit }) 
       <header><span>{title}</span><b>{latest ?? '—'} {unit}</b></header>
       <div className="chart">
         <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={data} margin={{ top: 10, right: 12, bottom: 0, left: -18 }}>
+          <AreaChart data={data} margin={{ top: 10, right: 12, bottom: 0, left: 0 }}>
             <defs>
               <linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1">
                 <stop stopColor={color} stopOpacity=".35" />
@@ -38,12 +38,13 @@ export function TelemetryChart({ title, data, field, color = '#35b9ff', unit }) 
             <CartesianGrid stroke="#31506d" vertical={false} />
             <XAxis
               dataKey="time"
-              interval={Math.max(0, Math.ceil(data.length / 6) - 1)}
+              interval="preserveStartEnd"
+              minTickGap={24}
               tick={{ fill: '#7890a9', fontSize: 10 }}
               axisLine={false}
               tickLine={false}
             />
-            <YAxis width={42} tick={{ fill: '#7890a9', fontSize: 10 }} axisLine={false} tickLine={false} />
+            <YAxis width={56} tick={{ fill: '#7890a9', fontSize: 10 }} axisLine={false} tickLine={false} />
             <Tooltip
               contentStyle={tooltipStyle}
               labelStyle={{ color: '#95acc0' }}
